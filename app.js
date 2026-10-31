@@ -7,6 +7,7 @@
   const MAX_THREADS = 80;
   const MAX_PULLERS = 700;
   const PULL_LIFETIME = 7000;
+  const DRIFT_LIFETIME = 1500;
   const MAX_MESSAGE = 120;
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const random = (min, max) => min + Math.random() * (max - min);
@@ -33,14 +34,14 @@
 
   function createGlyphs() {
     const glyphs = [];
-    const arc = (letters, baseline) => {
+    const arc = (letters, radius) => {
       [...letters].forEach((key, index) => {
-        const offset = index / 6 - 1;
-        glyphs.push({ key, x: 300 + index * (1000 / 12), y: baseline - 174 * (1 - offset * offset), radius: 31, size: 65 });
+        const angle = (-150 + index * 10) * Math.PI / 180;
+        glyphs.push({ key, x: 800 + Math.cos(angle) * radius, y: 810 + Math.sin(angle) * radius, radius: 31, size: 65 });
       });
     };
-    arc("ABCDEFGHIJKLM", 463);
-    arc("NOPQRSTUVWXYZ", 581);
+    arc("ABCDEFGHIJKLM", 520);
+    arc("NOPQRSTUVWXYZ", 415);
     [..."1234567890"].forEach((key, index) => glyphs.push({ key, x: 405 + index * 88, y: 655, radius: 27, size: 47 }));
     glyphs.push(
       { key: "YES", x: 345, y: 198, radius: 48, size: 46 },
@@ -54,15 +55,17 @@
   const GLYPH_MAP = new Map(GLYPHS.map(glyph => [glyph.key, glyph]));
 
   function messageWeights(message) {
-    const weights = new Map();
-    const add = key => weights.set(key, (weights.get(key) || 0) + 1);
-    // Consume whole-word destinations first; "yesterday" still pulls its letters.
-    const remaining = String(message).slice(0, 500).toUpperCase().replace(/\b(YES|NO|GOODBYE|BYE)\b/g, word => {
-      add(word === "BYE" ? "GOODBYE" : word);
-      return " ";
-    });
-    for (const character of remaining) if (GLYPH_MAP.has(character)) add(character);
-    return weights;
+    const text = String(message).slice(0, 500).trim().toUpperCase()
+      .replace(/^[\s\p{P}\p{S}]+|[\s\p{P}\p{S}]+$/gu, "");
+    // Repeated-letter emotes ("aaa", "www") are chatter, not single-glyph votes.
+    const key = text === "BYE" ? "GOODBYE" : text;
+    return GLYPH_MAP.has(key) ? new Map([[key, 1]]) : new Map();
+  }
+
+  function messagePhase(message) {
+    let hash = 2166136261;
+    for (const character of message) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+    return (hash >>> 0) / 4294967296 * Math.PI * 2;
   }
 
   function unescapeTag(value) {
@@ -111,16 +114,31 @@
       this.angle = -0.08;
       this.spin = 0;
       this.pullers = new Map();
+      this.drifters = new Map();
+      this.winner = null;
     }
 
     addPull(user, weights, now) {
       if (!weights.size) return;
       // A chatter may refresh their hand, but cannot stack hundreds of hands.
       this.pullers.delete(user);
-      const total = [...weights.values()].reduce((sum, count) => sum + count, 0);
-      const normalized = [...weights].map(([key, count]) => [key, count / total * Math.min(3, Math.sqrt(total))]);
-      this.pullers.set(user, { weights: normalized, time: now, phase: random(0, Math.PI * 2) });
+      const key = weights.keys().next().value;
+      if (!GLYPH_MAP.has(key)) return;
+      this.pullers.set(user, { weights: [[key, 1]], time: now, phase: messagePhase(String(user)) });
       if (this.pullers.size > MAX_PULLERS) this.pullers.delete(this.pullers.keys().next().value);
+    }
+
+    addMessage(user, message, now) {
+      const weights = messageWeights(message);
+      if (weights.size) { this.addPull(user, weights, now); this.drifters.delete(user); return; }
+      // Chatter does not erase or refresh the user's latest deliberate vote.
+      this.drifters.delete(user);
+      this.drifters.set(user, { time: now, phase: messagePhase(`${user}:${message}:${Math.floor(now)}`) });
+      if (this.drifters.size > MAX_PULLERS) this.drifters.delete(this.drifters.keys().next().value);
+    }
+
+    clear() {
+      this.pullers.clear(); this.drifters.clear(); this.winner = null;
     }
 
     aggregate(now) {
@@ -136,26 +154,45 @@
           total += weight;
         }
       }
-      return { weights, total };
+      let leader = null;
+      for (const [key, weight] of weights) if (!leader || weight > weights.get(leader)) leader = key;
+      // A near tie retains its destination; a clear new plurality takes over.
+      if (!weights.has(this.winner) || (leader && weights.get(leader) > weights.get(this.winner) * 1.15)) this.winner = leader;
+      let driftX = 0, driftY = 0;
+      for (const [user, drift] of this.drifters) {
+        const age = now - drift.time;
+        if (age > DRIFT_LIFETIME) { this.drifters.delete(user); continue; }
+        const force = 0.025 * Math.exp(-age / 350);
+        const phase = drift.phase + age / 110;
+        driftX += Math.cos(phase) * force; driftY += Math.sin(phase) * force;
+      }
+      // Even a raid contributes at most 12% of one hand, in no glyph's direction.
+      const driftScale = Math.min(1, 0.12 / (Math.hypot(driftX, driftY) || 1));
+      return { weights, total, winner: this.winner, driftX: driftX * driftScale, driftY: driftY * driftScale };
     }
 
     step(dt, now) {
       const crowd = this.aggregate(now);
+      let targetX, targetY, spring;
       if (crowd.total > 0.01) {
-        let targetX = 0;
-        let targetY = 0;
+        const winner = GLYPH_MAP.get(crowd.winner);
+        targetX = winner.x; targetY = winner.y;
+        // Minority hands tug at the winner, but cannot move its window to a third glyph.
         for (const [key, weight] of crowd.weights) {
           const glyph = GLYPH_MAP.get(key);
-          targetX += glyph.x * weight;
-          targetY += glyph.y * weight;
+          const distance = Math.hypot(glyph.x - winner.x, glyph.y - winner.y) || 1;
+          targetX += (glyph.x - winner.x) / distance * weight / crowd.total * 12;
+          targetY += (glyph.y - winner.y) / distance * weight / crowd.total * 12;
         }
-        targetX /= crowd.total;
-        targetY /= crowd.total;
         // More agreement means a stiffer spring. Capping it keeps large raids stable.
-        const spring = Math.min(19, 2 + Math.sqrt(crowd.total) * 2.2) * this.strength;
-        this.vx += (targetX - this.x) * spring * dt;
-        this.vy += (targetY - this.y) * spring * dt;
+        spring = Math.min(19, crowd.total * 1.5) * this.strength;
+      } else {
+        targetX = 800 + Math.sin(now / 8000) * 100 + Math.sin(now / 3700) * 22;
+        targetY = 530 + Math.cos(now / 9500) * 65;
+        spring = 0.65;
       }
+      this.vx += ((targetX - this.x) * spring + crowd.driftX * 400) * dt;
+      this.vy += ((targetY - this.y) * spring + crowd.driftY * 400) * dt;
       const friction = Math.exp(-5.4 * dt);
       this.vx *= friction;
       this.vy *= friction;
@@ -165,15 +202,34 @@
       this.y += this.vy * dt;
       if (this.x < 190 || this.x > 1410) { this.x = clamp(this.x, 190, 1410); this.vx *= -0.2; }
       if (this.y < 148 || this.y > 770) { this.y = clamp(this.y, 148, 770); this.vy *= -0.2; }
-      const desiredAngle = clamp(this.vx * 0.00065, -0.22, 0.22) + Math.sin(now / 1900) * Math.min(speed / 2000, 0.02);
+      const desiredAngle = clamp(this.vx * 0.00065, -0.22, 0.22) + Math.sin(now / 1900) * Math.min(speed / 2000, 0.02) + crowd.driftX * 0.3;
       this.spin += ((desiredAngle - this.angle) * 24 - this.spin * 5) * dt;
       this.angle += this.spin * dt;
       return crowd;
     }
   }
 
+  function detectDwell(state, physics, crowd, now, dwell = 1600) {
+    let nearest = null, nearestDistance = Infinity;
+    for (const glyph of GLYPHS) {
+      const distance = Math.hypot(physics.x - glyph.x, physics.y - glyph.y);
+      if (crowd.weights.has(glyph.key) && distance < glyph.radius && distance < nearestDistance) {
+        nearest = glyph; nearestDistance = distance;
+      }
+    }
+    if (state.spoken) {
+      const last = GLYPH_MAP.get(state.spoken);
+      if (Math.hypot(physics.x - last.x, physics.y - last.y) > last.radius + 14) state.spoken = null;
+    }
+    if (!nearest || Math.hypot(physics.vx, physics.vy) > 25 || state.spoken === nearest.key) { state.dwellKey = null; return null; }
+    if (state.dwellKey !== nearest.key) { state.dwellKey = nearest.key; state.dwellStart = now; }
+    if (now - state.dwellStart < dwell) return null;
+    state.spoken = nearest.key; state.dwellKey = null;
+    return nearest.key;
+  }
+
   // These pure pieces can be checked in Node without pretending a DOM exists.
-  if (typeof module !== "undefined" && module.exports) module.exports = { readOptions, createGlyphs, messageWeights, parseIRC, isModerator, SpiritPhysics };
+  if (typeof module !== "undefined" && module.exports) module.exports = { readOptions, createGlyphs, messageWeights, parseIRC, isModerator, SpiritPhysics, detectDwell };
   if (typeof document === "undefined") return;
 
   const $ = id => document.getElementById(id);
@@ -496,7 +552,7 @@
     state.message = "";
     state.session++;
     state.dwellKey = null;
-    physics.pullers.clear();
+    physics.clear();
     $("session-number").textContent = `SESSION ${String(state.session).padStart(3, "0")}`;
     updateMessage(); updateHistory();
     $("announcement").textContent = message ? `Séance complete. Message: ${message}` : "A new séance begins.";
@@ -504,7 +560,7 @@
 
   function startSeance() {
     state.message = ""; state.dwellKey = null;
-    physics.pullers.clear();
+    physics.clear();
     state.session++;
     $("session-number").textContent = `SESSION ${String(state.session).padStart(3, "0")}`;
     updateMessage();
@@ -567,22 +623,9 @@
     if (options.demo && key === state.demoTarget) state.demoAdvance = now + (key === "GOODBYE" ? 2600 : 1300);
   }
 
-  function updateDwell(now) {
-    const speed = Math.hypot(physics.vx, physics.vy);
-    let nearest = null;
-    let nearestDistance = Infinity;
-    for (const glyph of GLYPHS) {
-      const distance = Math.hypot(physics.x - glyph.x, physics.y - glyph.y);
-      if (distance < glyph.radius && distance < nearestDistance) { nearest = glyph; nearestDistance = distance; }
-    }
-    // Hysteresis prevents jitter on a window edge from re-speaking the same glyph.
-    if (state.spoken) {
-      const last = GLYPH_MAP.get(state.spoken);
-      if (Math.hypot(physics.x - last.x, physics.y - last.y) > last.radius + 14) state.spoken = null;
-    }
-    if (!nearest || speed > 25 || state.spoken === nearest.key) { state.dwellKey = null; return; }
-    if (state.dwellKey !== nearest.key) { state.dwellKey = nearest.key; state.dwellStart = now; }
-    if (now - state.dwellStart >= options.dwell) { speak(nearest.key, now); state.dwellKey = null; }
+  function updateDwell(now, crowd) {
+    const key = detectDwell(state, physics, crowd, now, options.dwell);
+    if (key) speak(key, now);
   }
 
   function receiveChat(user, message, tags = {}) {
@@ -605,7 +648,7 @@
     if (state.rateBucket !== bucket) { state.rateBucket = bucket; state.bucketCount = 0; }
     // Count all traffic; bound physics ingestion during unusually large raids.
     if (++state.bucketCount > 300) return;
-    physics.addPull(user, messageWeights(message), state.clock);
+    physics.addMessage(user, message, state.clock);
   }
 
   function updateStats(wallNow) {
@@ -618,6 +661,7 @@
     else if (state.dwellKey) $("dwell-indicator").textContent = `${state.dwellKey} · ${Math.min(100, Math.floor((state.clock - state.dwellStart) / options.dwell * 100))}% MANIFESTED`;
     else $("dwell-indicator").textContent = state.spoken ? `${state.spoken} · A SIGN RECEIVED` : "WAITING FOR A SIGN";
     state.dirtyStats = false;
+    $("footer-hint").textContent = physics.pullers.size ? (options.demo ? "An imaginary crowd. A very real pull." : "The circle agrees. Follow the threads.") : "Type one letter. Guide the planchette.";
   }
 
   function demoTokens() {
@@ -653,9 +697,10 @@
     if (now < state.demoNext) return;
     state.demoNext = now + random(95, 185);
     const convergence = clamp((now - state.demoStarted) / 2100, 0.12, 1);
-    const letter = state.demoTarget === "__wander" ? "AZ" : Math.random() < convergence ? state.demoTarget : "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[Math.floor(random(0, 26))];
     const user = DEMO_USERS[Math.floor(random(0, DEMO_USERS.length))];
-    const message = letter.length > 1 ? letter.toLowerCase() : letter.repeat(Math.floor(random(1, 4)));
+    if (Math.random() < 0.22) { receiveChat(`${user}_drift`, ["is anyone there?", "the wood is moving", "spooky vibes", "look at those threads"][Math.floor(random(0, 4))]); return; }
+    const letter = state.demoTarget === "__wander" ? "A" : Math.random() < convergence ? state.demoTarget : "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[Math.floor(random(0, 26))];
+    const message = letter.toLowerCase();
     receiveChat(user, message);
   }
 
@@ -710,7 +755,7 @@
     socket.onopen = () => {
       if (!current()) { socket.close(); return; }
       state.lastTraffic = performance.now();
-      socket.send(`CAP REQ :twitch.tv/tags twitch.tv/commands\r\nPASS SCHMOOPIIE\r\nNICK ${nick}\r\nJOIN #${channel}\r\n`);
+      for (const command of ["CAP REQ :twitch.tv/tags twitch.tv/commands", "PASS SCHMOOPIIE", `NICK ${nick}`, `JOIN #${channel}`]) socket.send(`${command}\r\n`);
       setConnection(`Joining · #${channel}`, "pending");
     };
     socket.onmessage = event => {
@@ -809,7 +854,7 @@
     physics.strength = options.strength;
     if (sourceChanged) {
       stopChat(); state.reconnectAttempt = 0;
-      physics.pullers.clear(); state.chatters.clear(); state.recentMessages = [];
+      physics.clear(); state.chatters.clear(); state.recentMessages = [];
       state.demoTarget = null; state.demoIndex = 0; state.demoPhrase = 0; state.demoAdvance = Infinity;
       state.paused = false;
       $("pause-toggle").setAttribute("aria-pressed", "false");
@@ -850,7 +895,7 @@
         const dt = Math.min(remaining, 1 / 120);
         state.clock += dt * 1000;
         if (options.demo) runDemo(state.clock);
-        physics.step(dt, state.clock); updateDwell(state.clock);
+        const crowd = physics.step(dt, state.clock); updateDwell(state.clock, crowd);
         remaining -= dt;
       }
     }

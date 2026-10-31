@@ -2,7 +2,7 @@
 
 **A thousand hands. One message.**
 
-A candlelit spirit board for Twitch chat, made for an OBS Browser Source. Every message adds a hand to the planchette. The room pulls, the wood drifts, and a letter only speaks when everyone settles long enough to hear it.
+A candlelit spirit board for Twitch chat, made for an OBS Browser Source. Votes guide the planchette; ordinary chatter makes the wood tremble. A letter speaks when voted hands settle long enough to hear it.
 
 Plain HTML, CSS, and JavaScript. No installation, build, dependencies, account, token, or backend. The engraved board, wooden planchette, grain, threads, and chimes are generated locally.
 
@@ -28,10 +28,10 @@ Then open `http://localhost:8000/?demo=1` or `http://localhost:8000/?channel=you
 
 ## In OBS
 
-1. Add a **Browser Source**, width **1920**, height **1080**.
-2. Use the local `index.html` file for the default offline demo, or the localhost URL above for query parameters. A static host also works; hosting is optional.
-3. Set `channel=your_channel`. Use `bg=0` to make the area around the board transparent. The board itself stays opaque so its letters remain readable.
-4. Use **Interact** to adjust settings or enable chimes. Enable **Control audio via OBS** if you want this source in the OBS mixer.
+1. Serve this folder using the command above, and leave that terminal running while OBS uses it. A static host also works.
+2. Add a **Browser Source**, turn **Local file** off, and set its URL to `http://127.0.0.1:8000/?channel=your_channel&sound=0`. Set width **1920**, height **1080**.
+3. Add `&bg=0` to make the area around the board transparent. The board itself stays opaque so its letters remain readable. For the offline demo, use `?demo=1&sound=0`; the **Local file** option with `index.html` also runs the default demo.
+4. Use **Interact** to adjust settings. To enable chimes, remove `sound=0`, click the sound button, and enable **Control audio via OBS** if you want this source in the OBS mixer.
 
 All settings are encoded in the page URL. Copy that URL into the Browser Source after configuring it. There is no local storage or server-side state. Reloading starts a fresh séance.
 
@@ -39,14 +39,16 @@ Browser audio policies may require a click before sound can play. The sound butt
 
 ## How to play
 
-- Chat letters or numbers. Every ASCII letter or digit in a message pulls toward that glyph. Repeated characters add weight, with a per-message cap and one active hand per chatter to keep spam from taking over.
-- Whole words **yes**, **no**, **goodbye**, and **bye** pull to their named destinations instead of their individual letters. Matching is case insensitive; `yesterday` remains a collection of letter pulls.
-- Agree with other viewers to make the spring stronger. Hands fade over several seconds, leaving soft threads behind them. A window progress ring shows a letter beginning to manifest.
+- Send one letter or number, or exactly **yes**, **no**, **goodbye**, or **bye**. Agree with other viewers to make the spring stronger. A window progress ring shows a letter beginning to manifest.
 - Rest over a glyph at low speed for the dwell time to speak it. It glows, sounds a soft synthesized chime, and appears in **From beyond**. YES and NO appear as complete words.
 - The same glyph cannot repeat until the window leaves its neighborhood and returns. The demo also moves away between repeated letters, including the two Ls in HELLO.
 - **GOODBYE** keeps the message in **Echoes**, clears the strip, and begins another séance. The three most recent nonempty messages are kept in memory. The strip holds up to 120 characters.
 - **Close the circle** ends a séance from the page. In demo mode, it also moves on to the next phrase.
 - Press **M** to toggle sound; press **Space** to pause or resume the demo. Controls work with a keyboard, and motion preferences reduce decorative animation. The essential spring motion remains visible.
+
+### Votes and drift
+
+Matching ignores case, surrounding spaces, punctuation, and emoji: `h!` votes H, and `bye` votes GOODBYE. Repeated-letter emotes such as `aaa` and `www`, sentences, and other chatter are **drift**, not votes. Each viewer gets one vote; their next vote replaces it. Votes fade exponentially and expire after seven seconds. Ordinary chatter adds a seeded tremble lasting at most 1.5 seconds, capped across the entire crowd at 12% of one hand; it leaves an existing vote to decay. The leading vote group gets the spring target, a 15% switching threshold steadies close ties, and minority votes can offset the target by at most 12 board pixels. Only a glyph with live votes can speak. Without votes the board wanders and invites a single letter. This replaces the original letter-centroid model, which let English sentences pull toward S/T. The demo mixes single-glyph votes with chatter through the same input path.
 
 Broadcasters and moderators can send these exact commands (case insensitive):
 
@@ -75,24 +77,25 @@ Authority is read only from Twitch's `badges` IRC tag: `broadcaster/…` or `mod
 
 - **index.html** — accessible page structure, controls, message strip, history, and settings dialog.
 - **style.css** — responsive Victorian typography, candlelit layout, parchment finish, transparent backdrop, and reduced-motion treatment.
-- **app.js** — procedural Canvas artwork; damped linear and angular springs; expiring per-chatter pulls; dwell, sound, demo, statistics, and IRC.
+- **app.js** — procedural Canvas artwork; damped linear and angular springs; expiring votes and drift; shared dwell detection, sound, demo, statistics, and IRC.
 - **README.md** — operation and implementation notes.
 - **LICENSE** — MIT, copyright 2026 Nash Aschenbath.
 
-The page uses a cached, textured board and a cached wooden token. Only threads, pulse effects, particles, and motion are redrawn each frame. Physics uses small time steps; elapsed time is capped after a suspended frame to avoid jumps. There are at most **80 drawn threads**, **700 active hands**, **96 particles**, and **300 physics message ingestions per second**. All incoming messages still count toward the rolling 60-second traffic total; unique chatters are counted over 30 seconds, with a 10,000-entry safety cap. A single chatter refreshes their hand rather than stacking new hands. These bounds trade unlimited crowd detail for predictable rendering during raids.
+The page uses a cached, textured board and a cached wooden token. Only threads, pulse effects, particles, and motion are redrawn each frame. Physics uses small time steps; elapsed time is capped after a suspended frame to avoid jumps. There are at most **80 drawn vote threads**, **700 votes**, **700 drift hands**, **96 particles**, and **300 physics message ingestions per second**. Votes and drift use separate caps so ordinary chatter cannot evict votes. All incoming messages still count toward the rolling 60-second traffic total; unique chatters are counted over 30 seconds, with a 10,000-entry safety cap. These bounds trade unlimited crowd detail for predictable rendering during raids.
 
-Live mode connects anonymously to `wss://irc-ws.chat.twitch.tv:443` using `PASS SCHMOOPIIE`, a random `justinfan` nick, and `JOIN #channel`. It requests `twitch.tv/tags` and `twitch.tv/commands`, parses escaped IRC tags and buffered CRLF lines, answers PING, handles server RECONNECT, watches for stalled sockets, and reconnects with jittered exponential backoff up to about 30 seconds. Changing sources closes the old socket and invalidates its callbacks.
+Live mode connects anonymously to `wss://irc-ws.chat.twitch.tv:443` using `PASS SCHMOOPIIE`, a random `justinfan` nick, and `JOIN #channel`. Each outgoing IRC command gets its own WebSocket frame, including the request for `twitch.tv/tags` and `twitch.tv/commands`; batching these commands prevented the original version from joining. It parses escaped IRC tags and buffered CRLF lines, answers PING, handles server RECONNECT, watches for stalled sockets, and reconnects with jittered exponential backoff up to about 30 seconds. Changing sources closes the old socket and invalidates its callbacks.
 
 **Demo mode makes no network requests.** To respect the offline build requirement, no Google Fonts stylesheet is loaded: the design tries a locally installed **Cormorant Garamond** (a Google Fonts typeface), then Baskerville, Palatino/Book Antiqua, and Georgia. Install Cormorant Garamond separately if you want that particular face; it is optional. No remote assets, analytics, or font requests are included. The only external connection in live mode is Twitch IRC.
 
 ## Validation
 
-The JavaScript can be syntax-checked with Node without installing anything:
+Syntax and replay checks use plain Node without dependencies:
 
 ```sh
 node --check app.js
+node test/replay.test.cjs
 ```
 
 The app targets modern Canvas/WebSocket browsers and OBS's Chromium browser source. Rendering is sized for 1920 × 1080 and uses bounded effects and cached artwork; actual 60 fps depends on OBS composition and hardware. Live Twitch access requires an internet connection and Twitch's anonymous IRC service. Offline verification cannot guarantee the availability of that external service.
 
-Verified locally: `node --check app.js`; configuration, message weighting, tag parsing, permissions, spring settling, and decay checks; Edge visual checks for both finishes, 1920 × 1080 layout, a 390px mobile viewport, transparent background, and sound activation. Fourteen simulated IRC checks covered authentication, PING/PONG, fragmented lines, live glyph dwell, moderator commands, history, and reconnection. The offline demo completed HELLO (including repeated letters), IS ANYONE THERE, and YES. A 240-frame local Edge demo sample averaged about 165 fps; this is a browser measurement, not an OBS scene benchmark. No live Twitch connection was used for validation.
+Replay verification: kaicenat's 903 messages produce three signs, **O, W, YES**, backed by its standalone votes; summit1g's 77 messages produce none. Removing qualifying votes makes both recordings silent. Eight synthetic users voting H, then I, spell **HI** within nine seconds over either recording; the tests also inject at the middle and end, at 60 and 120 physics steps per second. Five A votes against three Z votes settle within 4.6 board pixels of A. Parsing, vote replacement, expiry, bounded drift, dwell eligibility, tie switching, and all 39 glyph centres are checked. The concentric alphabet arcs have no overlapping glyph windows (minimum clearance 5.43 board pixels).
