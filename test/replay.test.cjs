@@ -40,6 +40,55 @@ function groupVotes(start, duration, choose) {
   return rows;
 }
 
+for (const hz of [60, 120]) {
+  const singleVotes = [
+    { t: 0, user: "solo", text: "H" },
+    { t: 5000, user: "solo", text: "I" },
+    { t: 10000, user: "solo", text: "goodbye" }
+  ];
+  const single = replay(singleVotes, 18000, hz);
+  assert.deepEqual(single.spoken.map(s => s.key), ["H", "I", "GOODBYE"], `One viewer, single messages / ${hz}Hz`);
+  single.spoken.forEach((spoken, i) => {
+    const delay = spoken.t - singleVotes[i].t;
+    assert(delay >= 0 && delay <= 4000, `${spoken.key} must speak within 4 s of its single vote / ${hz}Hz: ${delay}ms`);
+  });
+  assert(single.insideBoard, `One viewer stays inside the board / ${hz}Hz`);
+  console.log(`One viewer / ${hz}Hz: ${JSON.stringify(single.spoken)}`);
+
+  const three = replay([
+    { t: 0, user: "small_1", text: "H" },
+    { t: 0, user: "small_2", text: "H" },
+    { t: 0, user: "small_3", text: "Y" }
+  ], 8000, hz);
+  assert.deepEqual(three.spoken.map(s => s.key), ["H"], `Two H / one Y must speak H / ${hz}Hz`);
+  assert(three.insideBoard, `Three viewers stay inside the board / ${hz}Hz`);
+  console.log(`Three viewers, 2 H / 1 Y / ${hz}Hz: ${JSON.stringify(three.spoken)}`);
+}
+
+const unanimousRaid = replay(Array.from({ length: 5000 }, (_, i) => ({ t: 0, user: `raid_${i}`, text: "H" })), 8000);
+assert.deepEqual(unanimousRaid.spoken.map(s => s.key), ["H"], "A unanimous raid must reach its glyph");
+assert(unanimousRaid.spoken[0].t <= 4000);
+assert(unanimousRaid.insideBoard, "A unanimous raid stays inside the board");
+console.log(`Unanimous raid, 5000 messages: ${JSON.stringify(unanimousRaid.spoken)}`);
+
+const room = new SpiritPhysics();
+room.addMessage("voter", "H", 0);
+room.addMessage("voter", "chatter", 100);
+assert.equal(room.aggregate(100).bystanderWeight, 0, "A live voter is not counted again as a bystander");
+room.addMessage("observer", "chatter", 100);
+assert.equal(room.aggregate(100).bystanderWeight, 1);
+assert.equal(room.aggregate(1700).total, Math.exp(-1700 / 1900), "Room activity does not refresh votes");
+assert.equal(room.drifters.size, 0, "Drift expires before room activity");
+assert(room.aggregate(1700).bystanderWeight > 0);
+room.addMessage("observer", "H", 2000);
+assert.equal(room.aggregate(2000).bystanderWeight, 0, "Voting removes a bystander's neutral weight");
+room.addMessage("observer", "chatter", 2100);
+room.aggregate(9101);
+assert.equal(room.bystanders.size, 0, "Room activity expires after seven seconds");
+room.addMessage("observer", "chatter", 10000);
+room.clear();
+assert.equal(room.bystanders.size, 0, "Clearing the room clears neutral activity");
+
 for (const name of ["kaicenat", "summit1g"]) {
   const rows = fs.readFileSync(path.join(__dirname, "fixtures", `${name}.jsonl`), "utf8").trim().split(/\r?\n/).map(JSON.parse);
   const end = rows.at(-1).t + 8000;
@@ -78,6 +127,7 @@ assert.equal(p.aggregate(7011).total, 0);
 for (let i = 0; i < 5000; i++) p.addMessage(`drift_${i}`, "the wood moves", 8000);
 const drift = p.aggregate(8000);
 assert.equal(drift.total, 0); assert.equal(p.drifters.size, 700);
+assert.equal(p.bystanders.size, 700, "Recent room activity stays bounded during a raid");
 assert(Math.hypot(drift.driftX, drift.driftY) <= 0.120001);
 // Put a still window directly on a glyph: drift still cannot authorize speech.
 p.x = glyph("H").x; p.y = glyph("H").y;

@@ -115,6 +115,7 @@
       this.spin = 0;
       this.pullers = new Map();
       this.drifters = new Map();
+      this.bystanders = new Map();
       this.winner = null;
     }
 
@@ -130,15 +131,18 @@
 
     addMessage(user, message, now) {
       const weights = messageWeights(message);
-      if (weights.size) { this.addPull(user, weights, now); this.drifters.delete(user); return; }
+      if (weights.size) { this.addPull(user, weights, now); this.drifters.delete(user); this.bystanders.delete(user); return; }
       // Chatter does not erase or refresh the user's latest deliberate vote.
+      this.bystanders.delete(user);
+      this.bystanders.set(user, now);
+      if (this.bystanders.size > MAX_PULLERS) this.bystanders.delete(this.bystanders.keys().next().value);
       this.drifters.delete(user);
       this.drifters.set(user, { time: now, phase: messagePhase(`${user}:${message}:${Math.floor(now)}`) });
       if (this.drifters.size > MAX_PULLERS) this.drifters.delete(this.drifters.keys().next().value);
     }
 
     clear() {
-      this.pullers.clear(); this.drifters.clear(); this.winner = null;
+      this.pullers.clear(); this.drifters.clear(); this.bystanders.clear(); this.winner = null;
     }
 
     aggregate(now) {
@@ -158,6 +162,13 @@
       for (const [key, weight] of weights) if (!leader || weight > weights.get(leader)) leader = key;
       // A near tie retains its destination; a clear new plurality takes over.
       if (!weights.has(this.winner) || (leader && weights.get(leader) > weights.get(this.winner) * 1.15)) this.winner = leader;
+      // Non-voting chat makes a busy room less unanimous, without choosing a glyph.
+      let bystanderWeight = 0;
+      for (const [user, time] of this.bystanders) {
+        const age = now - time;
+        if (age > PULL_LIFETIME) { this.bystanders.delete(user); continue; }
+        if (!this.pullers.has(user)) bystanderWeight += Math.exp(-age / 1900);
+      }
       let driftX = 0, driftY = 0;
       for (const [user, drift] of this.drifters) {
         const age = now - drift.time;
@@ -168,7 +179,7 @@
       }
       // Even a raid contributes at most 12% of one hand, in no glyph's direction.
       const driftScale = Math.min(1, 0.12 / (Math.hypot(driftX, driftY) || 1));
-      return { weights, total, winner: this.winner, driftX: driftX * driftScale, driftY: driftY * driftScale };
+      return { weights, total, winner: this.winner, bystanderWeight, driftX: driftX * driftScale, driftY: driftY * driftScale };
     }
 
     step(dt, now, motionNow = now) {
@@ -184,8 +195,9 @@
           targetX += (glyph.x - winner.x) / distance * weight / crowd.total * 12;
           targetY += (glyph.y - winner.y) / distance * weight / crowd.total * 12;
         }
-        // More agreement means a stiffer spring. Capping it keeps large raids stable.
-        spring = Math.min(19, crowd.total * 1.5) * this.strength;
+        // Agreement sustains a lone hand through decay; headcount adds only a capped bonus.
+        const agreement = crowd.weights.get(crowd.winner) / (crowd.total + crowd.bystanderWeight);
+        spring = Math.min(19, 1.5 + agreement * 13.5 + Math.min(4, crowd.total * 0.2)) * this.strength;
       } else {
         targetX = 800 + Math.sin(motionNow / 8000) * 100 + Math.sin(motionNow / 3700) * 22;
         targetY = 530 + Math.cos(motionNow / 9500) * 65;
