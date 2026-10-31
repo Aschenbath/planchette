@@ -7,10 +7,10 @@ const { messageWeights, SpiritPhysics, createGlyphs, detectDwell, prepareFrame }
 const glyphs = createGlyphs();
 const glyph = key => glyphs.find(g => g.key === key);
 const vote = text => [...messageWeights(text).keys()];
-for (const [text, expected] of [[" h ", "H"], ["...a!!!", "A"], ["(9)", "9"], ["YES!", "YES"], ["no", "NO"], ["bye", "GOODBYE"], ["GoodBye", "GOODBYE"], ["👻 i 👻", "I"]]) {
+for (const [text, expected] of [[" h ", "H"], ["...a!!!", "A"], ["(9)", "9"], ["YES!", "YES"], ["no", "NO"], ["bye", "GOODBYE"], ["GoodBye", "GOODBYE"], ["👻 i 👻", "I"], ["❤️ yes", "YES"], ["👍🏽 h", "H"]]) {
   assert.deepEqual(vote(text), [expected], text);
 }
-for (const text of ["hello", "say yes", "yesterday", "A Z", "aaa", "OOO", "www", "222", "HAH", "Kappa", "", "!seance"]) assert.deepEqual(vote(text), [], text);
+for (const text of ["hello", "say yes", "yesterday", "A Z", "aaa", "OOO", "www", "222", "HAH", "Kappa", "", "!seance", ":D", "D:", "<3", ":3", ":P", ";D", "o/", "\\o", "^^"]) assert.deepEqual(vote(text), [], text);
 
 function replay(rows, end, hz = 120) {
   const p = new SpiritPhysics();
@@ -32,10 +32,10 @@ function replay(rows, end, hz = 120) {
 }
 
 const sort = rows => rows.sort((a, b) => a.t - b.t);
-function groupVotes(start, duration, choose) {
+function groupVotes(start, duration, choose, size = 8) {
   const rows = [];
   for (let t = start; t <= start + duration; t += 1000) {
-    for (let i = 0; i < 8; i++) rows.push({ t, user: `synthetic_${i}`, text: choose(t - start, i) });
+    for (let i = 0; i < size; i++) rows.push({ t, user: `synthetic_${i}`, text: choose(t - start, i) });
   }
   return rows;
 }
@@ -93,28 +93,47 @@ for (const name of ["kaicenat", "summit1g"]) {
   const rows = fs.readFileSync(path.join(__dirname, "fixtures", `${name}.jsonl`), "utf8").trim().split(/\r?\n/).map(JSON.parse);
   const end = rows.at(-1).t + 8000;
   const baseline = replay(sort([...rows]), end);
-  assert.deepEqual(baseline.spoken.map(s => s.key), name === "kaicenat" ? ["O", "W", "YES"] : [], `${name}: only the sparse real votes should speak`);
+  assert.deepEqual(baseline.spoken.map(s => s.key), name === "kaicenat" ? ["O", "YES"] : [], `${name}: only the sparse real votes should speak`);
   const driftOnly = replay(rows.filter(r => !messageWeights(r.text).size), end);
   assert.equal(driftOnly.spoken.length, 0, `${name}: ordinary chatter must stay silent`);
   assert(driftOnly.travelled > 100, `${name}: an empty-vote board should wander`);
   assert(driftOnly.insideBoard, `${name}: an empty-vote board should stay inside the board`);
   console.log(`${name}: ${rows.length} messages, spoken ${JSON.stringify(baseline.spoken)}, path ${baseline.travelled}px`);
+  // The speaking quorum is ceil(sqrt(room) / 2): about 9 of kaicenat's ~300 chatters, 3 of summit1g's ~30.
+  const group = name === "kaicenat" ? 16 : 8;
   // Try the beginning, middle and end of each recording, at two frame rates.
   for (const start of [0, Math.floor(rows.at(-1).t / 2), Math.max(0, rows.at(-1).t - 14000)]) {
     for (const hz of [60, 120]) {
-      const mixed = sort([...rows, ...groupVotes(start, 14000, t => t < 6000 ? "H" : "I")]);
+      const mixed = sort([...rows, ...groupVotes(start, 14000, t => t < 6000 ? "H" : "I", group)]);
       const result = replay(mixed, start + 15000, hz);
       assert.deepEqual(result.spoken.filter(s => s.t >= start).map(s => s.key), ["H", "I"], `${name} + HI at ${start}ms / ${hz}Hz`);
       assert(result.spoken.at(-1).t - start <= 15000);
-      if (start === 0 && hz === 120) console.log(`${name} + 8 voters: ${JSON.stringify(result.spoken)}`);
+      if (start === 0 && hz === 120) console.log(`${name} + ${group} voters: ${JSON.stringify(result.spoken)}`);
     }
   }
-  const majority = replay(sort([...rows, ...groupVotes(0, 14000, (_, i) => i < 5 ? "A" : "Z")]), 15000);
+  // A stray vote in a busy room moves the hand but never reaches the quorum to speak; once the
+  // 30 s room window has filled, neither do two.
+  const voteless = rows.filter(r => !messageWeights(r.text).size);
+  for (const [start, count] of [[5000, 1], [30000, 1], [60000, 1], [30000, 2], [60000, 2]]) {
+    const few = Array.from({ length: count }, (_, i) => ({ t: start + i * 1500, user: `few_${i}`, text: "D" }));
+    const result = replay(sort([...voteless, ...few]), start + 12000);
+    assert.deepEqual(result.spoken, [], `${name}: ${count} stray vote(s) at ${start}ms must stay silent`);
+  }
+  const majority = replay(sort([...rows, ...groupVotes(0, 14000, (_, i) => i < group * 5 / 8 ? "A" : "Z", group)]), 15000);
   assert.deepEqual(majority.spoken.map(s => s.key), ["A"]);
   const distance = Math.hypot(majority.p.x - glyph("A").x, majority.p.y - glyph("A").y);
   assert(distance < glyph("A").radius);
-  console.log(`${name} + 5 A / 3 Z: A, distance from A ${distance.toFixed(2)}px`);
+  console.log(`${name} + ${group * 5 / 8} A / ${group * 3 / 8} Z: A, distance from A ${distance.toFixed(2)}px`);
 }
+
+const quorumRoom = new SpiritPhysics();
+quorumRoom.addMessage("solo", "H", 0);
+assert.equal(quorumRoom.aggregate(0).quorum, 1, "A lone viewer is their own quorum");
+for (let i = 0; i < 8; i++) quorumRoom.addMessage(`chatter_${i}`, "hello", 0);
+assert.equal(quorumRoom.aggregate(0).quorum, 2, "Nine chatters need two matching votes");
+assert.equal(quorumRoom.aggregate(30001).quorum, 1, "The room window forgets chatters after 30 s");
+quorumRoom.clear();
+assert.equal(quorumRoom.room.size, 0);
 
 const p = new SpiritPhysics();
 p.addMessage("one", "A", 0); p.addMessage("one", "Z", 10);

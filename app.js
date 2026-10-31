@@ -7,6 +7,8 @@
   const MAX_THREADS = 80;
   const MAX_PULLERS = 700;
   const PULL_LIFETIME = 7000;
+  // A glyph speaks only with a quorum that grows with the square root of the people chatting in the room window.
+  const ROOM_WINDOW = 30000;
   const DRIFT_LIFETIME = 1500;
   const MAX_MESSAGE = 120;
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -55,8 +57,11 @@
   const GLYPH_MAP = new Map(GLYPHS.map(glyph => [glyph.key, glyph]));
 
   function messageWeights(message) {
-    const text = String(message).slice(0, 500).trim().toUpperCase()
-      .replace(/^[\s\p{P}\p{S}]+|[\s\p{P}\p{S}]+$/gu, "");
+    let text = String(message).slice(0, 500).trim().toUpperCase();
+    // Emoticons such as "D:", ":P", "<3" and "o/" are chatter, not votes for D, P, 3 or O.
+    text = text.replace(/[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Join_Control}\p{Variation_Selector}]/gu, " ");
+    if (/[:;=<>/\\^|]/.test(text)) return new Map();
+    text = text.replace(/^[\s\p{P}\p{S}]+|[\s\p{P}\p{S}]+$/gu, "");
     // Repeated-letter emotes ("aaa", "www") are chatter, not single-glyph votes.
     const key = text === "BYE" ? "GOODBYE" : text;
     return GLYPH_MAP.has(key) ? new Map([[key, 1]]) : new Map();
@@ -116,6 +121,7 @@
       this.pullers = new Map();
       this.drifters = new Map();
       this.bystanders = new Map();
+      this.room = new Map();
       this.winner = null;
     }
 
@@ -130,6 +136,9 @@
     }
 
     addMessage(user, message, now) {
+      this.room.delete(user);
+      this.room.set(user, now);
+      if (this.room.size > MAX_PULLERS) this.room.delete(this.room.keys().next().value);
       const weights = messageWeights(message);
       if (weights.size) { this.addPull(user, weights, now); this.drifters.delete(user); this.bystanders.delete(user); return; }
       // Chatter does not erase or refresh the user's latest deliberate vote.
@@ -142,17 +151,18 @@
     }
 
     clear() {
-      this.pullers.clear(); this.drifters.clear(); this.bystanders.clear(); this.winner = null;
+      this.pullers.clear(); this.drifters.clear(); this.bystanders.clear(); this.room.clear(); this.winner = null;
     }
 
     aggregate(now) {
-      const weights = new Map();
+      const weights = new Map(), voters = new Map();
       let total = 0;
       for (const [user, pull] of this.pullers) {
         const age = now - pull.time;
         if (age > PULL_LIFETIME) { this.pullers.delete(user); continue; }
         const decay = Math.exp(-age / 1900);
         for (const [key, count] of pull.weights) {
+          voters.set(key, (voters.get(key) || 0) + 1);
           const weight = count * decay;
           weights.set(key, (weights.get(key) || 0) + weight);
           total += weight;
@@ -169,6 +179,10 @@
         if (age > PULL_LIFETIME) { this.bystanders.delete(user); continue; }
         if (!this.pullers.has(user)) bystanderWeight += Math.exp(-age / 1900);
       }
+      for (const [user, time] of this.room) {
+        if (now - time > ROOM_WINDOW) this.room.delete(user); else break;
+      }
+      const quorum = Math.max(1, Math.ceil(Math.sqrt(this.room.size) / 2));
       let driftX = 0, driftY = 0;
       for (const [user, drift] of this.drifters) {
         const age = now - drift.time;
@@ -179,7 +193,7 @@
       }
       // Even a raid contributes at most 12% of one hand, in no glyph's direction.
       const driftScale = Math.min(1, 0.12 / (Math.hypot(driftX, driftY) || 1));
-      return { weights, total, winner: this.winner, bystanderWeight, driftX: driftX * driftScale, driftY: driftY * driftScale };
+      return { weights, total, winner: this.winner, bystanderWeight, voters, quorum, driftX: driftX * driftScale, driftY: driftY * driftScale };
     }
 
     step(dt, now, motionNow = now) {
@@ -225,7 +239,7 @@
     let nearest = null, nearestDistance = Infinity;
     for (const glyph of GLYPHS) {
       const distance = Math.hypot(physics.x - glyph.x, physics.y - glyph.y);
-      if (crowd.weights.has(glyph.key) && distance < glyph.radius && distance < nearestDistance) {
+      if ((crowd.voters.get(glyph.key) || 0) >= crowd.quorum && distance < glyph.radius && distance < nearestDistance) {
         nearest = glyph; nearestDistance = distance;
       }
     }
