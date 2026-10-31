@@ -171,7 +171,7 @@
       return { weights, total, winner: this.winner, driftX: driftX * driftScale, driftY: driftY * driftScale };
     }
 
-    step(dt, now) {
+    step(dt, now, motionNow = now) {
       const crowd = this.aggregate(now);
       let targetX, targetY, spring;
       if (crowd.total > 0.01) {
@@ -187,8 +187,8 @@
         // More agreement means a stiffer spring. Capping it keeps large raids stable.
         spring = Math.min(19, crowd.total * 1.5) * this.strength;
       } else {
-        targetX = 800 + Math.sin(now / 8000) * 100 + Math.sin(now / 3700) * 22;
-        targetY = 530 + Math.cos(now / 9500) * 65;
+        targetX = 800 + Math.sin(motionNow / 8000) * 100 + Math.sin(motionNow / 3700) * 22;
+        targetY = 530 + Math.cos(motionNow / 9500) * 65;
         spring = 0.65;
       }
       this.vx += ((targetX - this.x) * spring + crowd.driftX * 400) * dt;
@@ -202,7 +202,7 @@
       this.y += this.vy * dt;
       if (this.x < 190 || this.x > 1410) { this.x = clamp(this.x, 190, 1410); this.vx *= -0.2; }
       if (this.y < 148 || this.y > 770) { this.y = clamp(this.y, 148, 770); this.vy *= -0.2; }
-      const desiredAngle = clamp(this.vx * 0.00065, -0.22, 0.22) + Math.sin(now / 1900) * Math.min(speed / 2000, 0.02) + crowd.driftX * 0.3;
+      const desiredAngle = clamp(this.vx * 0.00065, -0.22, 0.22) + Math.sin(motionNow / 1900) * Math.min(speed / 2000, 0.02) + crowd.driftX * 0.3;
       this.spin += ((desiredAngle - this.angle) * 24 - this.spin * 5) * dt;
       this.angle += this.spin * dt;
       return crowd;
@@ -228,8 +228,19 @@
     return nearest.key;
   }
 
+  function prepareFrame(state, physics, wallNow, previousFrame) {
+    const gap = wallNow - previousFrame;
+    if (gap > 1000) {
+      // Expire hands and discard the pending dwell before a suspended page can speak.
+      physics.aggregate(wallNow);
+      state.dwellKey = null;
+      state.dwellStart = state.clock;
+    }
+    return Math.min(gap / 1000, 0.1);
+  }
+
   // These pure pieces can be checked in Node without pretending a DOM exists.
-  if (typeof module !== "undefined" && module.exports) module.exports = { readOptions, createGlyphs, messageWeights, parseIRC, isModerator, SpiritPhysics, detectDwell };
+  if (typeof module !== "undefined" && module.exports) module.exports = { readOptions, createGlyphs, messageWeights, parseIRC, isModerator, SpiritPhysics, detectDwell, prepareFrame };
   if (typeof document === "undefined") return;
 
   const $ = id => document.getElementById(id);
@@ -490,7 +501,7 @@
     ctx.restore();
   }
 
-  function draw(now) {
+  function draw(now, wallNow) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(staticBoard, 0, 0);
@@ -500,7 +511,7 @@
       candle.addColorStop(0, `rgba(225,155,67,${0.032 + Math.sin(now / 811) * 0.006})`); candle.addColorStop(1, "rgba(225,155,67,0)");
       ctx.fillStyle = candle; ctx.fillRect(0, 0, 900, HEIGHT);
     }
-    drawThreads(now);
+    drawThreads(wallNow);
     const pulseAge = now - state.pulseTime;
     if (state.pulseKey && pulseAge < 1600) {
       const glyph = GLYPH_MAP.get(state.pulseKey);
@@ -648,7 +659,7 @@
     if (state.rateBucket !== bucket) { state.rateBucket = bucket; state.bucketCount = 0; }
     // Count all traffic; bound physics ingestion during unusually large raids.
     if (++state.bucketCount > 300) return;
-    physics.addMessage(user, message, state.clock);
+    physics.addMessage(user, message, wallNow);
   }
 
   function updateStats(wallNow) {
@@ -888,18 +899,18 @@
   let lastStats = -Infinity;
   function frame(wallNow) {
     // Fixed small steps make damping independent of frame rate and recover from OBS pauses.
-    let remaining = Math.min((wallNow - previousFrame) / 1000, 0.1);
+    let remaining = prepareFrame(state, physics, wallNow, previousFrame);
     previousFrame = wallNow;
     if (!state.paused) {
       while (remaining > 0.00001) {
         const dt = Math.min(remaining, 1 / 120);
         state.clock += dt * 1000;
         if (options.demo) runDemo(state.clock);
-        const crowd = physics.step(dt, state.clock); updateDwell(state.clock, crowd);
+        const crowd = physics.step(dt, wallNow, state.clock); updateDwell(state.clock, crowd);
         remaining -= dt;
       }
     }
-    draw(state.clock);
+    draw(state.clock, wallNow);
     if (wallNow - lastStats >= 250) { updateStats(wallNow); lastStats = wallNow; }
     requestAnimationFrame(frame);
   }

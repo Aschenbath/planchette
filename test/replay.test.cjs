@@ -2,7 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { messageWeights, SpiritPhysics, createGlyphs, detectDwell } = require("../app.js");
+const { messageWeights, SpiritPhysics, createGlyphs, detectDwell, prepareFrame } = require("../app.js");
 
 const glyphs = createGlyphs();
 const glyph = key => glyphs.find(g => g.key === key);
@@ -16,18 +16,19 @@ function replay(rows, end, hz = 120) {
   const p = new SpiritPhysics();
   const state = { spoken: null, dwellKey: null, dwellStart: 0 };
   const spoken = [];
-  let i = 0, travelled = 0, px = p.x, py = p.y;
+  let i = 0, travelled = 0, px = p.x, py = p.y, insideBoard = true;
   for (let frame = 0; frame <= end * hz / 1000; frame++) {
     const t = frame * 1000 / hz;
     while (i < rows.length && rows[i].t <= t) {
       const row = rows[i++]; p.addMessage(row.user, row.text, t);
     }
     const crowd = p.step(1 / hz, t);
+    insideBoard &&= p.x >= 190 && p.x <= 1410 && p.y >= 148 && p.y <= 770;
     const key = detectDwell(state, p, crowd, t);
     if (key) spoken.push({ key, t: Math.round(t) });
     travelled += Math.hypot(p.x - px, p.y - py); px = p.x; py = p.y;
   }
-  return { p, spoken, travelled: Math.round(travelled) };
+  return { p, spoken, travelled: Math.round(travelled), insideBoard };
 }
 
 const sort = rows => rows.sort((a, b) => a.t - b.t);
@@ -46,7 +47,8 @@ for (const name of ["kaicenat", "summit1g"]) {
   assert.deepEqual(baseline.spoken.map(s => s.key), name === "kaicenat" ? ["O", "W", "YES"] : [], `${name}: only the sparse real votes should speak`);
   const driftOnly = replay(rows.filter(r => !messageWeights(r.text).size), end);
   assert.equal(driftOnly.spoken.length, 0, `${name}: ordinary chatter must stay silent`);
-  assert(baseline.travelled > 100, "An empty-vote board should wander");
+  assert(driftOnly.travelled > 100, `${name}: an empty-vote board should wander`);
+  assert(driftOnly.insideBoard, `${name}: an empty-vote board should stay inside the board`);
   console.log(`${name}: ${rows.length} messages, spoken ${JSON.stringify(baseline.spoken)}, path ${baseline.travelled}px`);
   // Try the beginning, middle and end of each recording, at two frame rates.
   for (const start of [0, Math.floor(rows.at(-1).t / 2), Math.max(0, rows.at(-1).t - 14000)]) {
@@ -86,6 +88,40 @@ assert.equal(p.drifters.size, 0);
 p.addMessage("one", "H", 0);
 detectDwell(state, p, p.aggregate(6500), 6500);
 assert.equal(detectDwell(state, p, p.aggregate(8200), 8200), null);
+
+// A suspended page must expire votes before its capped clock can finish a dwell.
+for (const freshVote of [false, true]) {
+  const suspended = new SpiritPhysics();
+  suspended.x = glyph("H").x; suspended.y = glyph("H").y;
+  suspended.addMessage("one", "H", 0);
+  const pending = { spoken: null, dwellKey: null, dwellStart: 0, clock: 0 };
+  const spoken = [];
+  function frame(wallNow, previousFrame) {
+    let remaining = prepareFrame(pending, suspended, wallNow, previousFrame);
+    while (remaining > 0.00001) {
+      const dt = Math.min(remaining, 1 / 120);
+      pending.clock += dt * 1000;
+      const crowd = suspended.step(dt, wallNow, pending.clock);
+      const key = detectDwell(pending, suspended, crowd, pending.clock);
+      if (key) spoken.push(key);
+      remaining -= dt;
+    }
+  }
+  for (let t = 10; t <= 1590; t += 10) frame(t, t - 10);
+  assert.equal(pending.dwellKey, "H", "A dwell is pending just before suspension");
+  assert.deepEqual(spoken, []);
+  suspended.addMessage("drift", "ordinary chatter", 1590);
+  if (freshVote) suspended.addMessage("fresh", "H", 11590);
+  const clockBefore = pending.clock;
+  frame(11590, 1590);
+  assert.deepEqual(spoken, [], "A 10 s suspension must not complete the pending dwell");
+  assert(!suspended.pullers.has("one"), "The old vote expires by wall time");
+  assert.equal(suspended.drifters.size, 0, "Drift also expires by wall time");
+  assert(Math.abs(pending.clock - clockBefore - 100) < 0.000001, "Physics advances by at most 100 ms on resume");
+  if (freshVote) assert(pending.dwellStart > clockBefore, "A fresh vote starts a new dwell on resume");
+  else assert.equal(pending.dwellKey, null);
+}
+console.log("Suspension: 10 s gap expires votes and drift, resets dwell, and caps physics at 100 ms.");
 
 // Hysteresis keeps an equal split steady, but lets a decisive new group win.
 p.clear();
