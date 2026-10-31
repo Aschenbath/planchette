@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#11120f">
+  <meta name="description" content="A thousand hands. One message. A candlelit spirit board moved by Twitch chat.">
+  <title>Planchette — a collective séance</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body data-theme="dark">
+  <div class="ambient" aria-hidden="true"></div>
+  <main class="observatory">
+    <header class="masthead">
+      <a class="identity" href="?demo=1" aria-label="Planchette, return to offline demo">
+        <svg class="brand-mark" viewBox="0 0 48 56" aria-hidden="true"><path d="M24 3C19 5 3 31 3 39c0 18 42 18 42 0C45 31 29 5 24 3Z"/><circle cx="24" cy="31" r="8"/><path d="M24 11v8M11 38l5-3m16 0 5 3M19 47h10"/></svg>
+        <span><span class="wordmark">Planchette<span class="wordmark-star">✧</span></span><span class="brand-caption">A COLLECTIVE SÉANCE</span></span>
+      </a>
+      <div class="masthead-center" aria-hidden="true"><span class="rule"></span><span>THE OTHER SIDE IS LISTENING</span><span class="rule"></span></div>
+      <nav class="controls" aria-label="Séance controls">
+        <button id="sound-toggle" class="icon-button" type="button" aria-label="Enable sound" aria-pressed="false" title="Enable sound (M)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-5 4H3v6h3l5 4V5Zm4 3c2 2 2 6 0 8m3-11c4 4 4 10 0 14"/><path class="mute-slash" d="m3 3 18 18"/></svg></button>
+        <button id="pause-toggle" class="icon-button" type="button" aria-label="Pause demo" aria-pressed="false" title="Pause demo (Space)"><svg viewBox="0 0 24 24" aria-hidden="true"><path id="pause-icon" d="M8 5v14M16 5v14"/></svg></button>
+        <span class="control-divider" aria-hidden="true"></span>
+        <button id="settings-open" class="settings-button" type="button" aria-label="Set the table"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6m8 4v6"/></svg><span>Set the table</span></button>
+      </nav>
+    </header>
+
+    <section class="seance" aria-label="Interactive spirit board">
+      <div class="board-heading"><span class="session-label"><span class="live-dot"></span><span id="mode-label">DEMO SÉANCE</span></span><span id="session-number">SESSION 001</span></div>
+      <div class="board-wrap">
+        <canvas id="board" width="1600" height="860" role="img" aria-label="Spirit board: YES and NO, two arcs of A through Z, digits 1 through 0, and GOODBYE. Chat gently pulls a wooden planchette toward the letters.">Your browser needs Canvas to display the spirit board.</canvas>
+        <div class="board-glint" aria-hidden="true"></div>
+      </div>
+      <div class="board-caption"><span class="caption-star" aria-hidden="true">✦</span><p>A thousand hands. <em>One message.</em></p><span id="dwell-indicator" class="dwell-indicator">WAITING FOR A SIGN</span></div>
+    </section>
+
+    <section class="message-area" aria-labelledby="message-heading">
+      <div class="message-label"><h1 id="message-heading">FROM BEYOND</h1><span id="message-count">00 / 120</span></div>
+      <div class="message-line" aria-live="polite" aria-atomic="true"><span id="message" class="message-text"></span><span id="message-placeholder" class="message-placeholder">Let the room find its voice.</span><span class="message-cursor" aria-hidden="true"></span></div>
+      <button id="end-session" class="end-button" type="button" title="Keep this message and begin again">Close the circle <span aria-hidden="true">↗</span></button>
+    </section>
+
+    <div id="history-wrap" class="history-wrap" hidden><span class="history-label">ECHOES</span><ol id="history" aria-label="Messages from previous séances"></ol></div>
+
+    <footer class="status-bar">
+      <div class="connection"><span id="connection-dot" class="connection-dot"></span><span id="connection-status" role="status">Gathering the spirits…</span></div>
+      <div class="crowd-stats"><span><strong id="chatter-count">0</strong> hands in the circle</span><span class="stat-divider">·</span><span><strong id="message-rate">0</strong> messages / min</span></div>
+      <span id="footer-hint" class="footer-hint">Chat a letter. Follow the threads.</span>
+    </footer>
+    <p id="announcement" class="sr-only" role="status"></p>
+  </main>
+
+  <dialog id="settings" aria-labelledby="settings-heading">
+    <form id="settings-form">
+      <div class="dialog-top"><span class="eyebrow">INVITE THE OTHER SIDE</span><button id="settings-close" type="button" class="icon-button" aria-label="Close settings">×</button></div>
+      <h2 id="settings-heading">Set the table.</h2>
+      <p class="dialog-intro">Gather your chat around the board, or let our imaginary crowd show you the way.</p>
+      <label class="field-label" for="channel">Twitch channel <span>no login needed</span></label>
+      <div class="channel-field"><span aria-hidden="true">#</span><input id="channel" name="channel" type="text" placeholder="your_channel" autocomplete="off" maxlength="25" pattern="[A-Za-z0-9_]{1,25}" aria-describedby="channel-hint"></div>
+      <p id="channel-hint" class="field-hint">Leave empty for an entirely offline demo.</p>
+      <div class="field-grid">
+        <div><label class="field-label" for="theme">Board finish</label><select id="theme" name="theme"><option value="dark">Midnight & brass</option><option value="parchment">Antique parchment</option></select></div>
+        <div><label class="field-label" for="dwell">Time to speak</label><select id="dwell" name="dwell"><option value="1000">1 second</option><option value="1600">1.6 seconds</option><option value="2500">2.5 seconds</option><option value="4000">4 seconds</option></select></div>
+      </div>
+      <label class="field-label" for="strength">Strength of the pull <output id="strength-value" for="strength">1.0×</output></label>
+      <input id="strength" name="strength" type="range" min="0.2" max="3" step="0.1" value="1">
+      <div class="check-row"><label><input id="setting-sound" name="sound" type="checkbox"> Soft chimes</label><label><input id="setting-bg" name="bg" type="checkbox"> Transparent backdrop</label></div>
+      <button class="primary-button" type="submit">Open the circle <span aria-hidden="true">✧</span></button>
+      <p class="dialog-footnote">For OBS: add this page as a 1920 × 1080 Browser Source.<br>Channel, theme, and timing are saved in the page URL.</p>
+    </form>
+  </dialog>
+  <noscript><p class="noscript">Enable JavaScript to bring the board to life.</p></noscript>
+</body>
+</html>
